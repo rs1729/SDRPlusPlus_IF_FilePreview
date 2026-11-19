@@ -92,7 +92,9 @@ private:
         if (_this->running) { return; }
         if (_this->reader == NULL) { return; }
         _this->running = true;
-        _this->workerThread = _this->float32Mode ? std::thread(floatWorker, _this) : std::thread(worker, _this);
+        if (_this->float32Mode) { _this->workerThread = std::thread(floatWorker, _this); }
+        else if (_this->reader->getBitDepth() == 8) { _this->workerThread = std::thread(worker8, _this); }
+        else { _this->workerThread = std::thread(worker, _this); }
         flog::info("FileSourceModule '{0}': Start!", _this->name);
     }
 
@@ -118,9 +120,12 @@ private:
 
         if (_this->fileSelect.render("##file_source_" + _this->name)) {
             if (_this->fileSelect.pathIsValid()) {
+                bool wasRunning = _this->running;
+                if (wasRunning) { stop(_this); }
                 if (_this->reader != NULL) {
                     _this->reader->close();
                     delete _this->reader;
+                    _this->reader = NULL;
                 }
                 try {
                     _this->reader = new WavReader(_this->fileSelect.path);
@@ -142,6 +147,7 @@ private:
                 catch (const std::exception& e) {
                     flog::error("Error: {}", e.what());
                 }
+                if (wasRunning && _this->reader != NULL) { start(_this); }
                 config.acquire();
                 config.conf["path"] = _this->fileSelect.path;
                 config.release(true);
@@ -160,6 +166,25 @@ private:
         while (true) {
             _this->reader->readSamples(inBuf, blockSize * 2 * sizeof(int16_t));
             volk_16i_s32f_convert_32f((float*)_this->stream.writeBuf, inBuf, 32768.0f, blockSize * 2);
+            if (!_this->stream.swap(blockSize)) { break; };
+        }
+
+        delete[] inBuf;
+    }
+
+    // 8-bit unsigned WAV files; see wavreader.h:wavU8ToFloat()
+    static void worker8(void* ctx) {
+        FileSourceModule* _this = (FileSourceModule*)ctx;
+        double sampleRate = std::max(_this->reader->getSampleRate(), (uint32_t)1);
+        int blockSize = std::min((int)(sampleRate / 200.0f), (int)STREAM_BUFFER_SIZE);
+        uint8_t* inBuf = new uint8_t[blockSize * 2];
+
+        while (true) {
+            _this->reader->readSamples(inBuf, blockSize * 2);
+            float* out = (float*)_this->stream.writeBuf;
+            for (int i = 0; i < blockSize * 2; i++) {
+                out[i] = wavU8ToFloat(inBuf[i]);
+            }
             if (!_this->stream.swap(blockSize)) { break; };
         }
 

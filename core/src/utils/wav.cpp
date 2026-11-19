@@ -4,6 +4,7 @@
 #include <dsp/buffer/buffer.h>
 #include <dsp/stream.h>
 #include <map>
+#include <algorithm>
 
 namespace wav {
     const char* WAVE_FILE_TYPE          = "WAVE";
@@ -157,8 +158,11 @@ namespace wav {
         switch (_type) {
         case SAMP_TYPE_UINT8:
             // Volk doesn't support unsigned ints yet :/
+            // added: TPDF dither and round to nearest byte 0..255
             for (int i = 0; i < tcount; i++) {
-                bufU8[i] = (samples[i] * 127.0f) + 128.0f;
+                float v = (samples[i] * 127.0f) + 128.0f + (nextUniform() - nextUniform());
+                v = std::min<float>(std::max<float>(v, 0.0f), 255.0f);
+                bufU8[i] = (uint8_t)(v + 0.5f);
             }
             rw.write(bufU8, tbytes);
             break;

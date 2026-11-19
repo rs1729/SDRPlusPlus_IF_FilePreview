@@ -5,6 +5,12 @@
 #include <string.h>
 #include <fstream>
 
+inline float wavU8ToFloat(uint8_t x) {
+    return ((float)x - 128.0f) / 128.0f; // B
+    // return ((float)x - 127.5f) / 127.5f; // A
+    // return ((float)x - 127.4f) / 128.0f; // C
+}
+
 #define WAV_SIGNATURE       "RIFF"
 #define WAV_TYPE            "WAVE"
 #define WAV_FORMAT_MARK     "fmt "

@@ -63,6 +63,15 @@ namespace wav {
         SampleType _type;
         size_t bytesPerSamp;
 
+        // Dither source for the 8-bit writer: xorshift32, uniform in [0, 1)
+        uint32_t rngState = 2463534242u;
+        inline float nextUniform() {
+            rngState ^= rngState << 13;
+            rngState ^= rngState >> 17;
+            rngState ^= rngState << 5;
+            return (float)(rngState >> 8) * (1.0f / 16777216.0f);
+        }
+
         uint8_t* bufU8 = NULL;
         int16_t* bufI16 = NULL;
         int32_t* bufI32 = NULL;
