@@ -17,6 +17,9 @@
 #include <utils/optionlist.h>
 #include "radio_interface.h"
 #include "demod.h"
+#include "if_spectrum.h"
+#include <dsp/sink/handler_sink.h>
+#include <dsp/channel/rx_vfo.h>
 
 ConfigManager config;
 
@@ -132,9 +135,20 @@ public:
 
         // Register the module interface
         core::modComManager.registerInterface("radio", name, moduleInterfaceHandler, this);
+
+        // Optional IF spectrum panel
+        extraDrawHandler.handler = extraWindowsDrawHandler;
+        extraDrawHandler.ctx = this;
+        gui::mainWindow.onExtraWindowsDraw.bindHandler(&extraDrawHandler);
+        ifPanelEventHandler.handler = ifPanelDrawHandler;
+        ifPanelEventHandler.ctx = this;
+        gui::mainWindow.onDrawIFPanel.bindHandler(&ifPanelEventHandler);
     }
 
     ~RadioModule() {
+        gui::mainWindow.onDrawIFPanel.unbindHandler(&ifPanelEventHandler);
+        gui::mainWindow.onExtraWindowsDraw.unbindHandler(&extraDrawHandler);
+        setIFViewActive(false);
         core::modComManager.unregisterInterface(name);
         gui::menu.removeEntry(name);
         stream.stop();
@@ -160,6 +174,7 @@ public:
 
     void disable() {
         enabled = false;
+        setIFViewActive(false);
         ifChain.stop();
         if (selectedDemod) { selectedDemod->stop(); }
         afChain.stop();
@@ -761,6 +776,104 @@ private:
         config.release(true);
     }
 
+
+    // IF spectrum panel
+    static void extraWindowsDrawHandler(bool, void* ctx) {
+        RadioModule* _this = (RadioModule*)ctx;
+        _this->updateIFView();
+    }
+
+    static void ifPanelDrawHandler(bool* drawn, void* ctx) {
+        RadioModule* _this = (RadioModule*)ctx;
+        _this->drawIFPanel(drawn);
+    }
+
+    static void ifViewSamplesHandler(dsp::complex_t* data, int count, void* ctx) {
+        RadioModule* _this = (RadioModule*)ctx;
+        _this->ifRing.push(data, count);
+    }
+
+    bool ifPanelWanted() {
+        return gui::mainWindow.showIFSpectrum && enabled && vfo && selectedDemod && (gui::waterfall.selectedVFO == name);
+    }
+
+    void drawIFPanel(bool* drawn) {
+        if (!ifPanelWanted()) { return; }
+        *drawn = true;
+        ifSpectrum.drawPanel(ifRing, ifViewSampleRate, ifViewActive, bandwidth, selectedDemod->getVFOReference());
+    }
+
+    void updateIFView() {
+        if (!ifPanelWanted()) {
+            setIFViewActive(false);
+            return;
+        }
+
+        if (!ifSpectrum.wideView()) {
+            double sr = selectedDemod->getIFSampleRate();
+            if (ifViewActive && (!ifViewIsTap || sr != ifViewSampleRate)) { setIFViewActive(false); }
+            if (!ifViewActive) { startIFTap(sr); }
+            return;
+        }
+
+        if (ifViewActive && ifViewIsTap) { setIFViewActive(false); }
+
+        double sr = std::min<double>(ifSpectrum.requestedSpan(bandwidth), sigpath::iqFrontEnd.getEffectiveSamplerate());
+        if (ifViewActive && sr != ifViewSampleRate) { setIFViewActive(false); }
+        if (!ifViewActive) { setIFViewActive(true, sr); }
+        if (!ifViewActive) { return; }
+
+        double offset = vfo->wtfVFO->centerOffset;
+        if (offset != ifViewOffset) {
+            ifViewVFO->setOffset(offset);
+            ifViewOffset = offset;
+        }
+    }
+
+    void startIFTap(double sr) {
+        if (!vfo || sr <= 0.0) { return; }
+        ifRing.reset();
+        vfo->dspVFO->setPreFilterTap(ifViewSamplesHandler, this);
+        ifViewSampleRate = sr;
+        ifViewIsTap = true;
+        ifViewActive = true;
+    }
+
+    void setIFViewActive(bool active, double sr = 0.0) {
+        if (active == ifViewActive) { return; }
+        if (!active && ifViewIsTap) {
+            if (vfo) { vfo->dspVFO->setPreFilterTap(NULL, NULL); }
+            ifViewIsTap = false;
+            ifViewActive = false;
+            return;
+        }
+        if (active) {
+            if (sr <= 0.0 || !vfo) { return; }
+            double offset = vfo->wtfVFO->centerOffset;
+
+            ifViewVFO = sigpath::iqFrontEnd.addVFO(name + "_ifview", sr, sr, offset);
+            if (!ifViewVFO) { return; }
+
+            ifRing.reset();
+            ifViewSink = new dsp::sink::Handler<dsp::complex_t>();
+            ifViewSink->init(&ifViewVFO->out, ifViewSamplesHandler, this);
+            ifViewSink->start();
+
+            ifViewSampleRate = sr;
+            ifViewOffset = offset;
+            ifViewActive = true;
+        }
+        else {
+            ifViewSink->stop();
+            delete ifViewSink;
+            ifViewSink = NULL;
+            sigpath::iqFrontEnd.removeVFO(name + "_ifview");
+            ifViewVFO = NULL;
+            ifViewActive = false;
+        }
+    }
+
+
     static void vfoUserChangedBandwidthHandler(double newBw, void* ctx) {
         RadioModule* _this = (RadioModule*)ctx;
         _this->setBandwidth(newBw);
@@ -846,8 +959,20 @@ private:
     EventHandler<float> srChangeHandler;
     EventHandler<dsp::stream<dsp::complex_t>*> ifChainOutputChanged;
     EventHandler<dsp::stream<dsp::stereo_t>*> afChainOutputChanged;
+    EventHandler<bool> extraDrawHandler;
+    EventHandler<bool*> ifPanelEventHandler;
 
     VFOManager::VFO* vfo = NULL;
+
+    // IF spectrum panel
+    IFSampleRing ifRing;
+    IFSpectrum ifSpectrum;
+    dsp::channel::RxVFO* ifViewVFO = NULL;
+    dsp::sink::Handler<dsp::complex_t>* ifViewSink = NULL;
+    bool ifViewActive = false;
+    bool ifViewIsTap = false;
+    double ifViewSampleRate = 0.0;
+    double ifViewOffset = 0.0;
 
     // IF chain
     dsp::chain<dsp::complex_t> ifChain;

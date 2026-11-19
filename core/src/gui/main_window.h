@@ -31,6 +31,12 @@ public:
     bool lockWaterfallControls = false;
     bool playButtonLocked = false;
 
+    // IF-Spectrum
+    bool showIFSpectrum = false;
+    float ifSpectrumHeight = 220.0f;
+    Event<bool> onExtraWindowsDraw;
+    Event<bool*> onDrawIFPanel;
+
     Event<bool> onPlayStateChange;
 
 private:

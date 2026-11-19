@@ -86,12 +86,22 @@ namespace dsp::channel {
             base_type::tempStart();
         }
 
+        // Used by IF-Spectrum panel.
+        void setPreFilterTap(void (*handler)(complex_t* data, int count, void* ctx), void* ctx) {
+            std::lock_guard<std::mutex> lck(tapMtx);
+            tapHandler = handler;
+            tapCtx = ctx;
+        }
+
         inline int process(int count, const complex_t* in, complex_t* out) {
             xlator.process(count, in, out);
             if (!filterNeeded) {
-                return resamp.process(count, out, out);
+                count = resamp.process(count, out, out);
+                callPreFilterTap(out, count);
+                return count;
             }
             count = resamp.process(count, out, out);
+            callPreFilterTap(out, count);
             {
                 std::lock_guard<std::mutex> lck(filterMtx);
                 filter.process(count, out, out);
@@ -120,11 +130,20 @@ namespace dsp::channel {
             ftaps = taps::lowPass(filterWidth, filterWidth * 0.1, _outSamplerate);
         }
 
+        inline void callPreFilterTap(complex_t* data, int count) {
+            std::lock_guard<std::mutex> lck(tapMtx);
+            if (tapHandler && count > 0) { tapHandler(data, count, tapCtx); }
+        }
+
         FrequencyXlator xlator;
         multirate::RationalResampler<complex_t> resamp;
         filter::FIR<complex_t, float> filter;
         tap<float> ftaps;
         bool filterNeeded;
+
+        void (*tapHandler)(complex_t* data, int count, void* ctx) = NULL;
+        void* tapCtx = NULL;
+        std::mutex tapMtx;
 
         double _inSamplerate;
         double _outSamplerate;

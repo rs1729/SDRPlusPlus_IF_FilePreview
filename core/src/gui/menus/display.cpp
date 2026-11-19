@@ -78,6 +78,10 @@ namespace displaymenu {
         fullWaterfallUpdate = core::configManager.conf["fullWaterfallUpdate"];
         gui::waterfall.setFullWaterfallUpdate(fullWaterfallUpdate);
 
+        if (core::configManager.conf.contains("showIFSpectrum")) {
+            gui::mainWindow.showIFSpectrum = core::configManager.conf["showIFSpectrum"];
+        }
+
         fftSizeId = fftSizes.valueId(65536);
         int size = core::configManager.conf["fftSize"];
         if (fftSizes.keyExists(size)) {
@@ -136,6 +140,12 @@ namespace displaymenu {
             gui::waterfall.setFullWaterfallUpdate(fullWaterfallUpdate);
             core::configManager.acquire();
             core::configManager.conf["fullWaterfallUpdate"] = fullWaterfallUpdate;
+            core::configManager.release(true);
+        }
+
+        if (ImGui::Checkbox("IF-Spectrum##_sdrpp", &gui::mainWindow.showIFSpectrum)) {
+            core::configManager.acquire();
+            core::configManager.conf["showIFSpectrum"] = gui::mainWindow.showIFSpectrum;
             core::configManager.release(true);
         }
 

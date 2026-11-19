@@ -203,6 +203,10 @@ void MainWindow::init() {
     fftHeight = core::configManager.conf["fftHeight"];
     gui::waterfall.setFFTHeight(fftHeight);
 
+    if (core::configManager.conf.contains("ifSpectrumHeight")) {
+        ifSpectrumHeight = core::configManager.conf["ifSpectrumHeight"];
+    }
+
     tuningMode = core::configManager.conf["centerTuning"] ? tuner::TUNER_MODE_CENTER : tuner::TUNER_MODE_NORMAL;
     gui::waterfall.VFOMoveSingleClick = (tuningMode == tuner::TUNER_MODE_CENTER);
 
@@ -543,11 +547,52 @@ void MainWindow::draw() {
     ImGui::NextColumn();
     ImGui::PopStyleVar();
 
-    ImGui::BeginChild("Waterfall");
+    if (showIFSpectrum) {
+        // Waterfall on top, IF-Spectrum panel docked below it, draggable splitter in between
+        ImVec2 colAvail = ImGui::GetContentRegionAvail();
+        float spacing = ImGui::GetStyle().ItemSpacing.y;
+        float splitH = 6.0f * style::uiScale;
+        float minPanelH = 100.0f * style::uiScale;
+        float minWfH = 150.0f * style::uiScale;
+        float maxPanelH = std::max<float>(minPanelH, colAvail.y - minWfH - splitH - (2.0f * spacing));
+        float panelH = std::clamp<float>(ifSpectrumHeight * style::uiScale, minPanelH, maxPanelH);
 
-    gui::waterfall.draw();
+        ImGui::BeginChild("Waterfall", ImVec2(0, colAvail.y - panelH - splitH - (2.0f * spacing)));
+        gui::waterfall.draw();
+        ImGui::EndChild();
 
-    ImGui::EndChild();
+        ImGui::InvisibleButton("##ifspectrum_splitter", ImVec2(ImGui::GetContentRegionAvail().x, splitH));
+        bool splitActive = ImGui::IsItemActive();
+        if (ImGui::IsItemHovered() || splitActive) { ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS); }
+        if (splitActive) {
+            panelH = std::clamp<float>(panelH - ImGui::GetIO().MouseDelta.y, minPanelH, maxPanelH);
+            ifSpectrumHeight = panelH / style::uiScale;
+        }
+        if (ImGui::IsItemDeactivated()) {
+            core::configManager.acquire();
+            core::configManager.conf["ifSpectrumHeight"] = ifSpectrumHeight;
+            core::configManager.release(true);
+        }
+        ImVec2 smin = ImGui::GetItemRectMin();
+        ImVec2 smax = ImGui::GetItemRectMax();
+        float smid = (smin.y + smax.y) / 2.0f;
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(smin.x, smid), ImVec2(smax.x, smid), IM_COL32(128, 128, 128, (splitActive ? 220 : 110)), 2.0f);
+
+        ImGui::BeginChild("IFSpectrumPanel", ImVec2(0, 0), true);
+        bool ifPanelDrawn = false;
+        onDrawIFPanel.emit(&ifPanelDrawn);
+        if (!ifPanelDrawn) {
+            ImGui::TextUnformatted("IF-Spectrum: select a Radio VFO to show its IF.");
+        }
+        ImGui::EndChild();
+    }
+    else {
+        ImGui::BeginChild("Waterfall");
+
+        gui::waterfall.draw();
+
+        ImGui::EndChild();
+    }
 
     if (!lockWaterfallControls) {
         // Handle arrow keys
@@ -663,6 +708,8 @@ void MainWindow::draw() {
     gui::waterfall.setWaterfallMax(fftMax);
 
     ImGui::End();
+
+    onExtraWindowsDraw.emit(true);
 
     if (showCredits) {
         credits::show();

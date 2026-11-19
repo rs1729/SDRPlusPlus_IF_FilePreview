@@ -247,6 +247,8 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["manualOffset"] = 0.0;
     defConfig["showMenu"] = true;
     defConfig["showWaterfall"] = true;
+    defConfig["showIFSpectrum"] = false;
+    defConfig["ifSpectrumHeight"] = 220.0;
     defConfig["source"] = "";
     defConfig["decimation"] = 1;
     defConfig["iqCorrection"] = false;
