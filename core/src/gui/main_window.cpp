@@ -207,6 +207,10 @@ void MainWindow::init() {
         ifSpectrumHeight = core::configManager.conf["ifSpectrumHeight"];
     }
 
+    if (core::configManager.conf.contains("previewPanelWidth")) {
+        previewPanelWidth = core::configManager.conf["previewPanelWidth"];
+    }
+
     tuningMode = core::configManager.conf["centerTuning"] ? tuner::TUNER_MODE_CENTER : tuner::TUNER_MODE_NORMAL;
     gui::waterfall.VFOMoveSingleClick = (tuningMode == tuner::TUNER_MODE_CENTER);
 
@@ -473,12 +477,31 @@ void MainWindow::draw() {
     // Process menu keybinds
     displaymenu::checkKeybinds();
 
+    // Optional Preview column (File source) between left menu and waterfall
+    bool previewOn = previewPanelActive;
+    float previewW = 0.0f;
+    auto setupColumns = [&](float leftW, float midW) {
+        if (previewOn) {
+            float defaultW = midW / 8.0f;
+            previewW = (previewPanelWidth > 0.0f) ? (previewPanelWidth * style::uiScale) : defaultW;
+            previewW = std::clamp<float>(previewW, 80.0f * style::uiScale, std::max<float>(80.0f * style::uiScale, midW / 2.0f));
+            ImGui::Columns(4, "WindowColumns4", false);
+            ImGui::SetColumnWidth(0, leftW);
+            ImGui::SetColumnWidth(1, previewW);
+            ImGui::SetColumnWidth(2, std::max<float>(midW - previewW, 100.0f * style::uiScale));
+            ImGui::SetColumnWidth(3, 60.0f * style::uiScale);
+        }
+        else {
+            ImGui::Columns(3, "WindowColumns", false);
+            ImGui::SetColumnWidth(0, leftW);
+            ImGui::SetColumnWidth(1, midW);
+            ImGui::SetColumnWidth(2, 60.0f * style::uiScale);
+        }
+    };
+
     // Left Column
     if (showMenu) {
-        ImGui::Columns(3, "WindowColumns", false);
-        ImGui::SetColumnWidth(0, menuWidth);
-        ImGui::SetColumnWidth(1, std::max<int>(winSize.x - menuWidth - (60.0f * style::uiScale), 100.0f * style::uiScale));
-        ImGui::SetColumnWidth(2, 60.0f * style::uiScale);
+        setupColumns(menuWidth, std::max<int>(winSize.x - menuWidth - (60.0f * style::uiScale), 100.0f * style::uiScale));
         ImGui::BeginChild("Left Column");
 
         if (gui::menu.draw(firstMenuRender)) {
@@ -536,10 +559,43 @@ void MainWindow::draw() {
     }
     else {
         // When hiding the menu bar
-        ImGui::Columns(3, "WindowColumns", false);
-        ImGui::SetColumnWidth(0, 8 * style::uiScale);
-        ImGui::SetColumnWidth(1, winSize.x - ((8 + 60) * style::uiScale));
-        ImGui::SetColumnWidth(2, 60.0f * style::uiScale);
+        setupColumns(8 * style::uiScale, winSize.x - ((8 + 60) * style::uiScale));
+    }
+
+    // Preview column
+    if (previewOn) {
+        ImGui::NextColumn();
+        float splitW = 6.0f * style::uiScale;
+        ImGui::BeginChild("PreviewPanel", ImVec2(std::max<float>(ImGui::GetContentRegionAvail().x - splitW, 10.0f), 0), true);
+        bool previewDrawn = false;
+        onDrawPreviewPanel.emit(&previewDrawn);
+        if (!previewDrawn) {
+            ImGui::TextWrapped("Preview: no file.");
+        }
+        ImGui::EndChild();
+        float childH = ImGui::GetItemRectSize().y;
+        ImGui::SameLine(0, 0);
+        ImGui::InvisibleButton("##preview_splitter", ImVec2(splitW, childH));
+        bool pSplitActive = ImGui::IsItemActive();
+        if (ImGui::IsItemHovered() || pSplitActive) { ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); }
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            previewPanelWidth = 0.0f; // back to automatic width
+            core::configManager.acquire();
+            core::configManager.conf["previewPanelWidth"] = previewPanelWidth;
+            core::configManager.release(true);
+        }
+        else if (pSplitActive) {
+            previewPanelWidth = std::max<float>(previewW + ImGui::GetIO().MouseDelta.x, 80.0f * style::uiScale) / style::uiScale;
+        }
+        if (ImGui::IsItemDeactivated()) {
+            core::configManager.acquire();
+            core::configManager.conf["previewPanelWidth"] = previewPanelWidth;
+            core::configManager.release(true);
+        }
+        ImVec2 psmin = ImGui::GetItemRectMin();
+        ImVec2 psmax = ImGui::GetItemRectMax();
+        float psmid = (psmin.x + psmax.x) / 2.0f;
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(psmid, psmin.y), ImVec2(psmid, psmax.y), IM_COL32(128, 128, 128, (pSplitActive ? 220 : 110)), 2.0f);
     }
 
     // Right Column

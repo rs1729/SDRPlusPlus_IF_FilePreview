@@ -37,6 +37,11 @@ public:
     Event<bool> onExtraWindowsDraw;
     Event<bool*> onDrawIFPanel;
 
+    // File Preview
+    bool previewPanelActive = false;
+    float previewPanelWidth = 0.0f;
+    Event<bool*> onDrawPreviewPanel;
+
     Event<bool> onPlayStateChange;
 
 private:

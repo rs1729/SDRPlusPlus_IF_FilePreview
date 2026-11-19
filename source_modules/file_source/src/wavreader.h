@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <fstream>
+#include <mutex>
+#include <atomic>
 
 inline float wavU8ToFloat(uint8_t x) {
     return ((float)x - 128.0f) / 128.0f; // B
@@ -45,6 +47,7 @@ public:
     }
 
     void readSamples(void* data, size_t size) {
+        std::lock_guard<std::mutex> lck(fileMtx);
         char* _data = (char*)data;
         file.read(_data, size);
         int read = file.gcount();
@@ -52,12 +55,32 @@ public:
             file.clear();
             file.seekg(sizeof(WavHeader_t));
             file.read(&_data[read], size - read);
+            dataPos = size - read;
+        }
+        else {
+            dataPos += size;
         }
         bytesRead += size;
     }
 
     void rewind() {
+        std::lock_guard<std::mutex> lck(fileMtx);
+        file.clear();
         file.seekg(sizeof(WavHeader_t));
+        dataPos = 0;
+    }
+
+    // File Preview
+    void seekData(uint64_t offset) {
+        std::lock_guard<std::mutex> lck(fileMtx);
+        file.clear();
+        file.seekg(sizeof(WavHeader_t) + offset);
+        dataPos = offset;
+    }
+
+    // File Preview
+    uint64_t getDataPos() {
+        return dataPos;
     }
 
     void close() {
@@ -84,5 +107,7 @@ private:
     bool valid = false;
     std::ifstream file;
     size_t bytesRead = 0;
+    std::mutex fileMtx;
+    std::atomic<uint64_t> dataPos{ 0 };
     WavHeader_t hdr;
 };

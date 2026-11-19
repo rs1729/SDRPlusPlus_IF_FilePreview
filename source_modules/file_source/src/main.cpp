@@ -5,8 +5,13 @@
 #include <gui/gui.h>
 #include <signal_path/signal_path.h>
 #include <wavreader.h>
+#include <preview.h>
+#include <dsp/window/blackman.h>
+#include <dsp/window/nuttall.h>
+#include <cmath>
 #include <core.h>
 #include <gui/widgets/file_select.h>
+#include <gui/style.h>
 #include <filesystem>
 #include <regex>
 #include <gui/tuner.h>
@@ -34,6 +39,8 @@ public:
 
         config.acquire();
         fileSelect.setPath(config.conf["path"], true);
+        if (config.conf.contains("preview")) { previewEnabled = config.conf["preview"]; }
+        if (config.conf.contains("previewOffset")) { previewOffsetDb = config.conf["previewOffset"]; }
         config.release();
 
         handler.ctx = this;
@@ -45,9 +52,22 @@ public:
         handler.tuneHandler = tune;
         handler.stream = &stream;
         sigpath::sourceManager.registerSource("File", &handler);
+
+        // Preview panel
+        extraDrawHandler.ctx = this;
+        extraDrawHandler.handler = extraDraw;
+        previewDrawHandler.ctx = this;
+        previewDrawHandler.handler = previewDraw;
+        gui::mainWindow.onExtraWindowsDraw.bindHandler(&extraDrawHandler);
+        gui::mainWindow.onDrawPreviewPanel.bindHandler(&previewDrawHandler);
     }
 
     ~FileSourceModule() {
+        if (!core::args["server"].b()) {
+            gui::mainWindow.onDrawPreviewPanel.unbindHandler(&previewDrawHandler);
+            gui::mainWindow.onExtraWindowsDraw.unbindHandler(&extraDrawHandler);
+            gui::mainWindow.previewPanelActive = false;
+        }
         stop(this);
         sigpath::sourceManager.unregisterSource("File");
     }
@@ -69,6 +89,7 @@ public:
 private:
     static void menuSelected(void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
+        _this->selected = true;
         core::setInputSampleRate(_this->sampleRate);
         tuner::tune(tuner::TUNER_MODE_IQ_ONLY, "", _this->centerFreq);
         sigpath::iqFrontEnd.setBuffering(false);
@@ -81,6 +102,9 @@ private:
 
     static void menuDeselected(void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
+        _this->selected = false;
+        _this->preview.stop();
+        gui::mainWindow.previewPanelActive = false;
         sigpath::iqFrontEnd.setBuffering(true);
         //gui::freqSelect.limitFreq = false;
         gui::waterfall.centerFrequencyLocked = false;
@@ -155,6 +179,101 @@ private:
         }
 
         ImGui::Checkbox("Float32 Mode##_file_source", &_this->float32Mode);
+
+        if (ImGui::Checkbox("Preview##_file_source", &_this->previewEnabled)) {
+            config.acquire();
+            config.conf["preview"] = _this->previewEnabled;
+            config.release(true);
+        }
+
+        if (_this->previewEnabled) {
+            ImGui::LeftLabel("Preview-Offset (dB)");
+            ImGui::FillWidth();
+            ImGui::SliderFloat("##_file_source_preview_offset", &_this->previewOffsetDb, -20.0f, 20.0f, "%.0f dB");
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                config.acquire();
+                config.conf["previewOffset"] = _this->previewOffsetDb;
+                config.release(true);
+            }
+        }
+    }
+
+    static void extraDraw(bool, void* ctx) {
+        FileSourceModule* _this = (FileSourceModule*)ctx;
+        bool want = _this->enabled && _this->selected && _this->previewEnabled && _this->reader != NULL;
+        if (want) {
+            std::string path = _this->fileSelect.path;
+            int format = _this->float32Mode ? FilePreview::FORMAT_F32 : ((_this->reader->getBitDepth() == 8) ? FilePreview::FORMAT_U8 : FilePreview::FORMAT_S16);
+            // Same switch as the main FFT: "IQ Correction" removes DC offset
+            bool dcRemove = false;
+            core::configManager.acquire();
+            if (core::configManager.conf.contains("iqCorrection")) { dcRemove = core::configManager.conf["iqCorrection"]; }
+            core::configManager.release();
+            if (!_this->preview.isScanning(path, format, dcRemove)) {
+                _this->preview.start(path, format, _this->sampleRate, dcRemove);
+            }
+        }
+        else {
+            _this->preview.stop();
+        }
+        gui::mainWindow.previewPanelActive = want;
+    }
+
+    static void mainFFTReference(double& offsetDb, double& narrowBoostDb) {
+        offsetDb = 0.0;
+        narrowBoostDb = 0.0;
+        int fftSize = 65536;
+        double fftRate = 20.0;
+        int window = 2;
+        core::configManager.acquire();
+        if (core::configManager.conf.contains("fftSize")) { fftSize = core::configManager.conf["fftSize"]; }
+        if (core::configManager.conf.contains("fftRate")) { fftRate = core::configManager.conf["fftRate"]; }
+        if (core::configManager.conf.contains("fftWindow")) { window = core::configManager.conf["fftWindow"]; }
+        core::configManager.release();
+
+        double sr = sigpath::iqFrontEnd.getEffectiveSamplerate();
+        if (sr <= 0.0 || fftRate <= 0.0 || fftSize <= 0) { return; }
+        int nz = std::min<int>((int)round(sr / fftRate), fftSize);
+        if (nz < 1) { nz = 1; }
+
+        static double mean[3] = { 1.0, -1.0, -1.0 };
+        static double meanSq[3] = { 1.0, -1.0, -1.0 };
+        int wi = std::clamp<int>(window, 0, 2);
+        if (meanSq[wi] < 0.0) {
+            const int n = 4096;
+            double acc = 0.0, acc2 = 0.0;
+            for (int i = 0; i < n; i++) {
+                double w = (wi == 1) ? dsp::window::blackman(i, n) : dsp::window::nuttall(i, n);
+                acc += w;
+                acc2 += w * w;
+            }
+            mean[wi] = acc / n;
+            meanSq[wi] = acc2 / n;
+        }
+        offsetDb = 10.0 * log10((double)nz * meanSq[wi]) - 20.0 * log10((double)fftSize);
+
+        double mainGainDb = 10.0 * log10((double)nz * mean[wi] * mean[wi] / meanSq[wi]);
+        narrowBoostDb = std::max<double>(0.0, mainGainDb - FilePreview::narrowCarrierGainDb());
+    }
+
+    static void previewDraw(bool* drawn, void* ctx) {
+        FileSourceModule* _this = (FileSourceModule*)ctx;
+        if (!_this->selected || _this->reader == NULL) { return; }
+        double posFrac = 0.0;
+        if (_this->preview.hasData()) {
+            double total = (double)_this->preview.getTotalFrames() * _this->preview.getBytesPerFrame();
+            posFrac = std::clamp<double>((double)_this->reader->getDataPos() / total, 0.0, 1.0);
+        }
+        bool seek = false;
+        double seekFrac = 0.0;
+        double refOffset, boost;
+        mainFFTReference(refOffset, boost);
+        *drawn = _this->preview.draw(posFrac, _this->centerFreq, refOffset + _this->previewOffsetDb, boost, seek, seekFrac);
+        if (seek && _this->preview.hasData()) {
+            uint64_t frame = (uint64_t)(seekFrac * (double)_this->preview.getTotalFrames());
+            frame = std::min<uint64_t>(frame, _this->preview.getTotalFrames() - 1);
+            _this->reader->seekData(frame * (uint64_t)_this->preview.getBytesPerFrame());
+        }
     }
 
     static void worker(void* ctx) {
@@ -227,11 +346,20 @@ private:
     double centerFreq = 100000000;
 
     bool float32Mode = false;
+
+    bool previewEnabled = false;
+    float previewOffsetDb = 0.0f;
+    bool selected = false;
+    FilePreview preview;
+    EventHandler<bool> extraDrawHandler;
+    EventHandler<bool*> previewDrawHandler;
 };
 
 MOD_EXPORT void _INIT_() {
     json def = json({});
     def["path"] = "";
+    def["preview"] = false;
+    def["previewOffset"] = 0.0;
     config.setPath(core::args["root"].s() + "/file_source_config.json");
     config.load(def);
     config.enableAutoSave();
