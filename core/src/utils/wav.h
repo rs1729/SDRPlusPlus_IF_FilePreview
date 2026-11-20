@@ -47,6 +47,7 @@ namespace wav {
         void setSamplerate(uint64_t samplerate);
         void setFormat(Format format);
         void setSampleType(SampleType type);
+        void setDither(bool enable); // TPDF dither, only used for SAMP_TYPE_UINT8
 
         size_t getSamplesWritten() { return samplesWritten; }
 
@@ -62,6 +63,7 @@ namespace wav {
         Format _format;
         SampleType _type;
         size_t bytesPerSamp;
+        bool _dither = false;
 
         // Dither source for the 8-bit writer: xorshift32, uniform in [0, 1)
         uint32_t rngState = 2463534242u;

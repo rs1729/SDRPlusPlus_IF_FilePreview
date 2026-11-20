@@ -148,6 +148,11 @@ namespace wav {
         _type = type;
     }
 
+    void Writer::setDither(bool enable) {
+        std::lock_guard<std::recursive_mutex> lck(mtx);
+        _dither = enable;
+    }
+
     void Writer::write(float* samples, int count) {
         std::lock_guard<std::recursive_mutex> lck(mtx);
         if (!rw.isOpen()) { return; }
@@ -160,8 +165,9 @@ namespace wav {
             // Volk doesn't support unsigned ints yet :/
             // added: TPDF dither and round to nearest byte 0..255
             for (int i = 0; i < tcount; i++) {
-                float v = (samples[i] * 127.0f) + 128.0f + (nextUniform() - nextUniform());
-                v = std::min<float>(std::max<float>(v, 0.0f), 255.0f);
+                float v = (samples[i] * 127.0f) + 128.0f;
+                if (_dither) { v += nextUniform() - nextUniform(); }
+                v = std::clamp<float>(v, 0.0f, 255.0f);
                 bufU8[i] = (uint8_t)(v + 0.5f);
             }
             rw.write(bufU8, tbytes);

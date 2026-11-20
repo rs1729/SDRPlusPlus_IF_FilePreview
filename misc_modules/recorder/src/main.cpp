@@ -8,6 +8,9 @@
 #include <dsp/audio/volume.h>
 #include <dsp/convert/stereo_to_mono.h>
 #include <thread>
+#include <atomic>
+#include <vector>
+#include <cmath>
 #include <ctime>
 #include <gui/gui.h>
 #include <filesystem>
@@ -26,6 +29,7 @@
 #define CONCAT(a, b) ((std::string(a) + b).c_str())
 
 #define SILENCE_LVL 10e-6
+#define MAX_GAIN_DB 60.0f
 
 SDRPP_MOD_INFO{
     /* Name:            */ "recorder",
@@ -82,6 +86,17 @@ public:
         }
         if (config.conf[name].contains("sampleType") && sampleTypes.keyExists(config.conf[name]["sampleType"])) {
             sampleTypeId = sampleTypes.keyId(config.conf[name]["sampleType"]);
+        }
+        if (config.conf[name].contains("gainAudio")) {
+            float g = config.conf[name]["gainAudio"];
+            gainAudio = std::clamp<float>(g, 0.0f, MAX_GAIN_DB);
+        }
+        if (config.conf[name].contains("gainBaseband")) {
+            float g = config.conf[name]["gainBaseband"];
+            gainBaseband = std::clamp<float>(g, 0.0f, MAX_GAIN_DB);
+        }
+        if (config.conf[name].contains("dither8")) {
+            dither8 = config.conf[name]["dither8"];
         }
         if (config.conf[name].contains("audioStream")) {
             selectedStreamName = config.conf[name]["audioStream"];
@@ -178,6 +193,8 @@ public:
         writer.setFormat(containers[containerId]);
         writer.setChannels((recMode == RECORDER_MODE_AUDIO && !stereo) ? 1 : 2);
         writer.setSampleType(sampleTypes[sampleTypeId]);
+        writer.setDither(dither8 && gainActive());
+        updateGain();
         writer.setSamplerate(samplerate);
 
         // Open file
@@ -303,7 +320,33 @@ private:
             config.release(true);
         }
 
+        // Dither for 8-bit recordings (Baseband or RAW)
+        bool ditherOk = _this->gainActive();
+        if (!ditherOk) { style::beginDisabled(); }
+        if (ImGui::Checkbox(CONCAT("Dither 8-bit##_recorder_dither8_", _this->name), &_this->dither8)) {
+            config.acquire();
+            config.conf[_this->name]["dither8"] = _this->dither8;
+            config.release(true);
+        }
+        if (!ditherOk) { style::endDisabled(); }
+
         if (_this->recording) { style::endDisabled(); }
+
+        // Gain for 8-bit recordings (Baseband or RAW)
+        {
+            bool gainOk = _this->gainActive();
+            float& gainDb = (_this->recMode == RECORDER_MODE_AUDIO) ? _this->gainAudio : _this->gainBaseband;
+            if (!gainOk) { style::beginDisabled(); }
+            ImGui::LeftLabel("Gain 8-bit");
+            ImGui::FillWidth();
+            if (ImGui::SliderFloat(CONCAT("##_recorder_gain_", _this->name), &gainDb, 0.0f, MAX_GAIN_DB, "%.0f dB")) {
+                config.acquire();
+                config.conf[_this->name][(_this->recMode == RECORDER_MODE_AUDIO) ? "gainAudio" : "gainBaseband"] = gainDb;
+                config.release(true);
+            }
+            if (!gainOk) { style::endDisabled(); }
+            _this->updateGain();
+        }
 
         // Show additional audio options
         if (_this->recMode == RECORDER_MODE_AUDIO) {
@@ -326,7 +369,8 @@ private:
 
             ImGui::FillWidth();
             if (ImGui::SliderFloat(CONCAT("##_recorder_vol_", _this->name), &_this->audioVolume, 0, 1, "")) {
-                _this->volume.setVolume(_this->audioVolume);
+                _this->lastVolumeArg = -1.0f;
+                _this->updateGain();
                 config.acquire();
                 config.conf[_this->name]["audioVolume"] = _this->audioVolume;
                 config.release(true);
@@ -461,6 +505,35 @@ private:
         if (dbLvl.r > lvl.r) { lvl.r = dbLvl.r; }
     }
 
+    bool isRawStream() {
+        if (selectedStreamName.empty()) { return false; }
+        if (core::modComManager.getModuleName(selectedStreamName) != "radio") { return false; }
+        int mode = -1;
+        core::modComManager.callInterface(selectedStreamName, RADIO_IFACE_CMD_GET_MODE, NULL, &mode);
+        return mode == RADIO_IFACE_MODE_RAW;
+    }
+
+    bool gainActive() {
+        if (sampleTypes[sampleTypeId] != wav::SAMP_TYPE_UINT8) { return false; }
+        return (recMode == RECORDER_MODE_BASEBAND) || isRawStream();
+    }
+
+    void updateGain() {
+        float lin = 1.0f;
+        if (gainActive()) {
+            float db = (recMode == RECORDER_MODE_AUDIO) ? gainAudio : gainBaseband;
+            lin = powf(10.0f, db / 20.0f);
+        }
+        float audioLin = (recMode == RECORDER_MODE_AUDIO) ? lin : 1.0f;
+        // volume block: amplitude = audioVolume^2 * audioLin
+        float volArg = audioVolume * sqrtf(audioLin);
+        if (volArg != lastVolumeArg) {
+            volume.setVolume(volArg);
+            lastVolumeArg = volArg;
+        }
+        basebandGainLin = (recMode == RECORDER_MODE_BASEBAND) ? lin : 1.0f;
+    }
+
     std::map<int, const char*> radioModeToString = {
         { RADIO_IFACE_MODE_NFM, "NFM" },
         { RADIO_IFACE_MODE_WFM, "WFM" },
@@ -527,6 +600,15 @@ private:
 
     static void complexHandler(dsp::complex_t* data, int count, void* ctx) {
         RecorderModule* _this = (RecorderModule*)ctx;
+        float gain = _this->basebandGainLin;
+        if (gain != 1.0f) {
+            // Gain for 8-bit baseband recordings
+            int n = count * 2;
+            if ((int)_this->gainBuf.size() < n) { _this->gainBuf.resize(n); }
+            volk_32f_s32f_multiply_32f(_this->gainBuf.data(), (float*)data, gain, n);
+            _this->writer.write(_this->gainBuf.data(), count);
+            return;
+        }
         _this->writer.write((float*)data, count);
     }
 
@@ -598,6 +680,12 @@ private:
     std::string selectedStreamName = "";
     float audioVolume = 1.0f;
     bool ignoreSilence = false;
+    bool dither8 = false;
+    float gainAudio = 0.0f;    // dB, Audio/RAW mode
+    float gainBaseband = 0.0f; // dB, Baseband mode
+    float lastVolumeArg = -1.0f;
+    std::atomic<float> basebandGainLin{ 1.0f };
+    std::vector<float> gainBuf;
     dsp::stereo_t audioLvl = { -100.0f, -100.0f };
 
     bool recording = false;
