@@ -5,6 +5,7 @@
 #include <dsp/math/constants.h>
 #include <gui/gui.h>
 #include <gui/style.h>
+#include <signal_path/signal_path.h>
 #include <mutex>
 #include <vector>
 #include <string>
@@ -71,10 +72,10 @@ public:
         release();
     }
 
-    // True: "Wide" view (extra downconverter, selectable span).
-    //False: "IF" view (tap inside the radio VFO, no extra VFO).
+    // True : "Wide" view (extra downconverter, selectable span).
+    // False: "IF" view (tap inside the radio VFO, no extra VFO).
     bool wideView() const {
-        return viewIdx == 0;
+        return viewIdx == 1;
     }
 
     double requestedSpan(double bandwidth) const {
@@ -108,8 +109,17 @@ public:
             lastSampleRate = sampleRate;
         }
 
+        // Noise floor offset
+        if (sampleRate > 0.0) {
+            double mainDb = 10.0 * std::log10(sigpath::iqFrontEnd.getEffectiveSamplerate() * sigpath::iqFrontEnd.getNzFFTSize())
+                          - 20.0 * std::log10((double)sigpath::iqFrontEnd.getFFTSize());
+            levelOffset = (float)(mainDb - 10.0 * std::log10(sampleRate / fftSize));
+        }
+
+        // Compute the spectrum
         bool valid = active && (sampleRate > 0.0) && compute(ring);
 
+        // Plot area
         ImVec2 avail = ImGui::GetContentRegionAvail();
         avail.x = std::max<float>(avail.x, 120.0f);
         avail.y = std::max<float>(avail.y, 60.0f);
@@ -246,7 +256,7 @@ private:
     inline static const char* const FFT_SIZE_NAMES[FFT_SIZE_COUNT] = { "1024", "2048", "4096", "8192", "16384" };
 
     static constexpr int VIEW_COUNT = 2;
-    inline static const char* const VIEW_NAMES[VIEW_COUNT] = { "Wide (extra VFO)", "IF (no extra VFO)" };
+    inline static const char* const VIEW_NAMES[VIEW_COUNT] = { "IF (no extra VFO)", "Wide (extra VFO)" };
 
     static constexpr int SPAN_COUNT = 7;
     inline static const double SPAN_VALUES[SPAN_COUNT] = { 12000.0, 24000.0, 48000.0, 96000.0, 192000.0, 384000.0, 768000.0 };
@@ -267,6 +277,7 @@ private:
         fftOut = (fftwf_complex*)fftwf_malloc(fftSize * sizeof(fftwf_complex));
         plan = fftwf_plan_dft_1d(fftSize, fftIn, fftOut, FFTW_FORWARD, FFTW_ESTIMATE);
 
+        // Blackman window
         window.assign(fftSize, 0.0f);
         for (int i = 0; i < fftSize; i++) {
             double a = (2.0 * DB_M_PI * i) / (fftSize - 1);
@@ -292,6 +303,9 @@ private:
         volk_32fc_32f_multiply_32fc((lv_32fc_t*)fftIn, (lv_32fc_t*)samples.data(), window.data(), fftSize);
         fftwf_execute(plan);
         volk_32fc_s32f_power_spectrum_32f(spec.data(), (lv_32fc_t*)fftOut, (float)fftSize, fftSize);
+        if (levelOffset != 0.0f) {
+            for (int i = 0; i < fftSize; i++) { spec[i] += levelOffset; }
+        }
 
         if (!haveSmooth) {
             smoothSpec = spec;
@@ -307,11 +321,12 @@ private:
 
     int sizeIdx = 2;
     int spanIdx = 0;
-    int viewIdx = 0;
+    int viewIdx = 0; // 0 = IF (default), 1 = Wide
     int fftSize = 0;
     bool smooth = true;
     bool haveSmooth = false;
     double lastSampleRate = 0.0;
+    float levelOffset = 0.0f;
 
     fftwf_complex* fftIn = NULL;
     fftwf_complex* fftOut = NULL;

@@ -48,6 +48,10 @@ public:
 
     double getEffectiveSamplerate();
 
+    // used by IF-Spectrum
+    inline int getFFTSize() { return _fftSize; }
+    inline int getNzFFTSize() { return _nzFFTSize; }
+
 protected:
     static void handler(dsp::complex_t* data, int count, void* ctx);
     void updateFFTPath(bool updateWaterfall = false);
