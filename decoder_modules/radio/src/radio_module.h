@@ -800,7 +800,8 @@ private:
     void drawIFPanel(bool* drawn) {
         if (!ifPanelWanted()) { return; }
         *drawn = true;
-        ifSpectrum.drawPanel(ifRing, ifViewSampleRate, ifViewActive, bandwidth, selectedDemod->getVFOReference());
+        double newBw = ifSpectrum.drawPanel(ifRing, ifViewSampleRate, ifViewActive, bandwidth, selectedDemod->getVFOReference(), bandwidthLocked);
+        if (newBw > 0.0) { setBandwidth(newBw); }
     }
 
     void updateIFView() {
@@ -872,7 +873,7 @@ private:
             ifViewActive = false;
         }
     }
-
+    //
 
     static void vfoUserChangedBandwidthHandler(double newBw, void* ctx) {
         RadioModule* _this = (RadioModule*)ctx;

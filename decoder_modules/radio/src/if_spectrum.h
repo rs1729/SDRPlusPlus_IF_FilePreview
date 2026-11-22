@@ -87,7 +87,8 @@ public:
         return SPAN_VALUES[SPAN_COUNT - 1];
     }
 
-    void drawPanel(IFSampleRing& ring, double sampleRate, bool active, double bandwidth, int vfoRef) {
+    // Returns the bandwidth requested by dragging a box edge with the mouse, or 0 if none.
+    double drawPanel(IFSampleRing& ring, double sampleRate, bool active, double bandwidth, int vfoRef, bool bwLocked) {
         // Controls
         ImGui::Checkbox("Smooth##_ifspec", &smooth);
         ImGui::SameLine();
@@ -133,7 +134,7 @@ public:
         ImVec2 pMax(origin.x + avail.x - 6.0f, origin.y + avail.y - bottomMargin);
         float pw = pMax.x - pMin.x;
         float ph = pMax.y - pMin.y;
-        if (pw < 10.0f || ph < 10.0f) { return; }
+        if (pw < 10.0f || ph < 10.0f) { return 0.0; }
 
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImU32 colText = ImGui::GetColorU32(ImGuiCol_Text);
@@ -212,6 +213,7 @@ public:
             dl->AddText(ImVec2(pMin.x + (pw - ts.x) / 2.0f, pMin.y + (ph - ts.y) / 2.0f), colText, msg);
         }
 
+        double newBw = 0.0;
         if (sampleRate > 0.0 && bandwidth > 0.0) {
             float xl = pMin.x + (float)((-bandwidth / 2.0 + half) / hzPerPx);
             float xr = pMin.x + (float)((bandwidth / 2.0 + half) / hzPerPx);
@@ -219,6 +221,16 @@ public:
             dl->AddLine(ImVec2(xl, pMin.y), ImVec2(xl, pMax.y), IM_COL32(255, 255, 255, 140));
             dl->AddLine(ImVec2(xr, pMin.y), ImVec2(xr, pMax.y), IM_COL32(255, 255, 255, 140));
 
+            if (!bwLocked) {
+                ImVec2 m = ImGui::GetMousePos();
+                bool onEdge = hovered && (std::fabs(m.x - xl) < 5.0f * style::uiScale || std::fabs(m.x - xr) < 5.0f * style::uiScale);
+                if (onEdge && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { dragBw = true; }
+                if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) { dragBw = false; }
+                if (onEdge || dragBw) { ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); }
+                if (dragBw) { newBw = 2.0 * std::fabs(((m.x - pMin.x) * hzPerPx) - half); }
+            }
+
+            // Tuned frequency marker (depends on the VFO reference)
             double tuned = 0.0;
             if (vfoRef == ImGui::WaterfallVFO::REF_LOWER) { tuned = -bandwidth / 2.0; }
             else if (vfoRef == ImGui::WaterfallVFO::REF_UPPER) { tuned = bandwidth / 2.0; }
@@ -248,6 +260,7 @@ public:
 
         dl->PopClipRect();
         dl->AddRect(pMin, pMax, colFrame);
+        return newBw;
     }
 
 private:
@@ -327,6 +340,7 @@ private:
     bool haveSmooth = false;
     double lastSampleRate = 0.0;
     float levelOffset = 0.0f;
+    bool dragBw = false;
 
     fftwf_complex* fftIn = NULL;
     fftwf_complex* fftOut = NULL;
